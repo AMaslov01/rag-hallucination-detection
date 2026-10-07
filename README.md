@@ -1,4 +1,4 @@
-# HalluGraph: Evidence-Grounded RAG Hallucination Detection
+# Evidence-Grounded RAG Hallucination Detection
 
 Knowledge-graph and atomic-claim verification for detecting unsupported statements in RAG answers.
 
