@@ -18,7 +18,7 @@ On a fixed held-out RAGTruth QA split, the best `support-critical` configuration
 | `support` | 0.730 [0.648, 0.816] | 0.695 [0.611, 0.773] | 0.640 / 0.760 |
 | `support-critical` | **0.849 [0.784, 0.909]** | **0.798 [0.726, 0.862]** | **0.704 / 0.920** |
 
-This is a **+0.095 ROC-AUC** improvement over the reproduced HalluGraph-style baseline. Parameters and thresholds were selected on training data only. The held-out evaluation contains 147 valid answers from a deterministic 750-answer manifest; three answers were not scored because graph extraction returned an empty graph.
+This is a **+0.095 ROC-AUC** improvement over the HalluGraph baseline reproduced from the original paper. Parameters and thresholds were selected on training data only. The held-out evaluation contains 147 valid answers from a deterministic 750-answer manifest; three answers were not scored because graph extraction returned an empty graph.
 
 The result comes from one fixed manifest and is not an independent replication. See the [OpenReview paper](https://openreview.net/forum?id=5nEiOJwG17) for the full study.
 
