@@ -1,25 +1,65 @@
-# HalluGraph-KGGen configuration.
+# Evidence-grounded RAG hallucination detection configuration.
 # The LLM model string is the ONLY place the backend model is defined.
-# Fill in `llm.model` with a real LiteLLM-style slug before a live run, e.g.:
-#   openrouter/openai/gpt-4o-mini      (env: OPENROUTER_API_KEY)
-#   openrouter/meta-llama/llama-3.1-8b-instruct
-#   nvidia_nim/meta/llama-3.1-8b-instruct   (env: NVIDIA_API_KEY)
+# The DataSphere runtime derives the Cloud Run URL and immutable gateway
+# fingerprint from its authenticated runtime manifest. Do not put an API key
+# or a Google service-account key in this file.
 
 llm:
-  model: "openrouter/PLACEHOLDER"     # <-- fill in later; do NOT hardcode elsewhere
-  api_base: null                      # optional custom base_url (e.g. https://integrate.api.nvidia.com/v1)
-  api_key_env: "OPENROUTER_API_KEY"   # env var to read the API key from
+  model: "openai/gemini-2.5-flash"    # the sole logical model selector
+  api_base: null                       # populated only in a job-local gateway config
+  api_key_env: "RAG_EVAL_API_KEY"       # environment variable; never committed
   temperature: 0.0
+  request_timeout_s: 90              # bound local/remote LLM calls; retries remain controlled below
   max_retries: 5
   retry_backoff_base_s: 2
-  concurrency: 4                      # parallel API calls, respect rate limits
+  retry_backoff_max_s: 60
+  rate_limit_cooldown_max_s: 900
+  # A prolonged 429 streak is a provider-capacity outage, not useful progress.
+  # Preserve durable caches and end the Job explicitly after this per-request budget.
+  rate_limit_retry_deadline_s: 1800
+  # The recovery budget also covers alternating 429/5xx/truncation responses.
+  # It remains generous; a short provider incident must not replace a real
+  # verdict with a fallback value.
+  retry_deadline_s: 1800
+  # ``concurrency=1`` alone does not impose an inter-request rate.
+  request_min_interval_s: 4
+  concurrency: 4                      # baseline; CPU gateway probe derives 1 in its local config
+  structured_output_transport: "none" # gateway job sets native response_format
+  structured_output_backend: "vertex"
+  structured_output_request_backend: null # Vertex has no vLLM guided-decoding field
+  model_revision: null                # derived from the authenticated gateway manifest
+  runtime_fingerprint: null           # derived from image + gateway manifests in live Jobs
 
 extraction:
   cluster: true                       # KGGen entity/edge resolution ON
+  # A provider can very rarely return malformed or truncated JSON despite the
+  # native response schema. Retry only the rejected response a bounded number
+  # of times; no invalid graph is ever cached or treated as supported evidence.
+  max_protocol_retries: 3
+  # If Vertex reports finish_reason=length, retry the same native request with
+  # a bounded larger output ceiling before declaring the graph unavailable.
+  max_tokens_ceiling: 32768
+  # KGGen 0.4 exposes a native clustering ``context`` parameter.  Ground its
+  # otherwise label-only LLM decisions in the exact text currently being
+  # clustered (G_c, G_q, or G_a respectively); this does not mix graph roles.
+  cluster_context_mode: "source_text"
+  # Optional safety bound for the *post-extraction* KGGen LLM clustering.
+  # null preserves KGGen's native behaviour. Legacy local-vLLM jobs may set a
+  # finite value; the CPU Vertex probe intentionally preserves this null.
+  cluster_max_items: null
+  # Optional diagnostic gate for bounded probes.  null preserves official
+  # KGGen clustering without imposing a global compression threshold.
+  cluster_min_retention_ratio: null
+  cluster_retention_min_items: 5
   context_chunk_chars: 6000           # chunk long contexts; KGGen aggregates chunks (maps to kg-gen chunk_size)
+  serial_chunking: false              # DataSphere local-vLLM override disables KGGen's nested thread pools
 
 matching:
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_model_revision: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+  embedding_model_path: null          # DataSphere sets the staged, image-local snapshot path
+  embedding_device: "cpu"            # CPU-only Vertex profile also keeps matching local
+  local_files_only: true              # scoring must never trigger a late Hub download
   entity_sim_threshold: 0.90          # tau_e
   relation_sim_threshold: 0.75        # tau_r
   allow_substring_match: true
@@ -54,6 +94,53 @@ metrics:
   alpha: null                         # tuned on train split; paper reports alpha ~= 0.7
   empty_response_graph_policy: "report_both"   # see metrics.py / report; {report_both, exclude, impute}
   empty_response_impute_h: 0.5
+
+# Uses llm.model above; deliberately no second model identifier.
+relation_verifier:
+  cache_dir: ".cache/verdicts"
+  prompt_version: "relation-entailment-v1"
+  max_evidence_sentences: 4
+  # A native-schema response can still very rarely be malformed or truncated.
+  # Reissue only this scalar decision a small, bounded number of times.  If
+  # it remains invalid, the verifier records an explicitly marked ``unknown``
+  # rather than making an unsupported positive inference or aborting a long
+  # cache-backed run.
+  max_protocol_retries: 3
+
+# A separate protocol: it does not mutate historical strict/support caches or
+# their formulas.  Clear claims without direct evidence are ``unsupported``;
+# only ambiguous/non-factual text may remain ``unknown``.
+support_critical:
+  claim_extractor:
+    cache_dir: ".cache/critical_claims"
+    prompt_version: "atomic-claims-v1"
+    max_tokens: 2048
+    max_tokens_ceiling: 8192
+    max_protocol_retries: 4
+    # A list of every atomic fact can exceed even a large JSON output budget
+    # for one unusually long answer.  Segments keep offsets exact and cache
+    # independently; a completion ceiling recursively bisects to this floor.
+    chunk_chars: 900
+    min_chunk_chars: 160
+  coverage_reviewer:
+    cache_dir: ".cache/critical_coverage"
+    prompt_version: "full-context-coverage-v1"
+    max_tokens: 2048
+    max_tokens_ceiling: 8192
+    max_protocol_retries: 4
+    chunk_chars: 900
+    min_chunk_chars: 160
+  claim_verifier:
+    cache_dir: ".cache/critical_verdicts"
+    prompt_version: "closed-world-claim-verdict-v1"
+    max_tokens: 512
+    max_tokens_ceiling: 8192
+    max_protocol_retries: 4
+    max_evidence_sentences: 8
+  tuning:
+    beta_grid: [0.25, 0.5, 0.75]
+    top_k_grid: [1, 2, 3]
+    unknown_risk_grid: [0.0, 0.25]
 
 data:
   dir: "data"                         # holds source_info.jsonl and response.jsonl

@@ -24,6 +24,7 @@ def h_array(
     alpha: float,
     impute: float | None = None,
     include_unscorable: bool = False,
+    mode: str = "strict",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (H, mask) where mask marks entries that carry a usable score.
 
@@ -33,12 +34,86 @@ def h_array(
     H = np.full(len(scores), np.nan, dtype=float)
     mask = np.zeros(len(scores), dtype=bool)
     for i, s in enumerate(scores):
-        h = s.h(alpha, impute=impute if include_unscorable else None)
+        h = s.h_for_mode(alpha, mode=mode, impute=impute if include_unscorable else None)
         if h is None:
             continue
         H[i] = h
         mask[i] = True
     return H, mask
+
+
+def critical_h_array(
+    scores: Sequence[ScoreResult],
+    alpha: float,
+    beta: float,
+    top_k: int,
+    unknown_risk: float,
+    *,
+    include_unscorable: bool = False,
+    impute: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return support-critical H and its usable-score mask.
+
+    The default preserves paired strict/support evaluation by excluding graph
+    unscorable rows even when the claim layer can provide a diagnostic score.
+    """
+    H = np.full(len(scores), np.nan, dtype=float)
+    mask = np.zeros(len(scores), dtype=bool)
+    for i, score in enumerate(scores):
+        if score.unscorable and not include_unscorable:
+            continue
+        h = score.critical_h(alpha, beta, top_k, unknown_risk, impute=impute)
+        if h is not None:
+            H[i] = h
+            mask[i] = True
+    return H, mask
+
+
+def critical_cv(
+    scores: Sequence[ScoreResult],
+    y: Sequence[int],
+    *,
+    alpha_grid: Sequence[float],
+    beta_grid: Sequence[float],
+    top_k_grid: Sequence[int],
+    unknown_risk_grid: Sequence[float],
+    folds: int = 5,
+    seed: int = 42,
+) -> list[dict[str, float | int]]:
+    """Evaluate the complete critical parameter grid on train data only."""
+    y_all = np.asarray(list(y), dtype=int)
+    scorable_idx = np.array([i for i, score in enumerate(scores) if not score.unscorable], dtype=int)
+    if len(scorable_idx) == 0:
+        return []
+    y_s = y_all[scorable_idx]
+    subset = [scores[i] for i in scorable_idx]
+    n_splits = min(folds, _max_stratified_splits(y_s))
+    folds_idx = (
+        list(StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed).split(np.zeros(len(subset)), y_s))
+        if n_splits >= 2 else []
+    )
+    rows: list[dict[str, float | int]] = []
+    for alpha in alpha_grid:
+        for beta in beta_grid:
+            for top_k in top_k_grid:
+                for unknown_risk in unknown_risk_grid:
+                    H, mask = critical_h_array(subset, alpha, beta, top_k, unknown_risk)
+                    if folds_idx:
+                        values = []
+                        for _, val_idx in folds_idx:
+                            vi = val_idx[mask[val_idx]]
+                            if len(vi):
+                                value = safe_auc(H[vi], y_s[vi])
+                                if not np.isnan(value):
+                                    values.append(value)
+                        auc = float(np.mean(values)) if values else float("nan")
+                    else:
+                        auc = safe_auc(H[mask], y_s[mask])
+                    rows.append({
+                        "alpha": float(alpha), "beta": float(beta), "top_k": int(top_k),
+                        "unknown_risk": float(unknown_risk), "cv_mean_auc": auc,
+                    })
+    return rows
 
 
 def safe_auc(h: np.ndarray, y: np.ndarray) -> float:
@@ -54,6 +129,7 @@ def alpha_cv(
     grid: Sequence[float],
     folds: int = 5,
     seed: int = 42,
+    mode: str = "strict",
 ) -> tuple[float, dict[float, float]]:
     """Pick alpha maximizing mean cross-validated ROC-AUC of H on the train split.
 
@@ -73,7 +149,7 @@ def alpha_cv(
     if n_splits < 2:
         # Not enough per-class samples to CV; fall back to whole-train AUC.
         for a in grid:
-            H, m = h_array(sub, a)
+            H, m = h_array(sub, a, mode=mode)
             per_alpha[a] = safe_auc(H[m], y_s[m])
         best = _argmax_alpha(per_alpha)
         return best, per_alpha
@@ -81,7 +157,7 @@ def alpha_cv(
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
     folds_idx = list(skf.split(np.zeros(len(sub)), y_s))
     for a in grid:
-        H, m = h_array(sub, a)
+        H, m = h_array(sub, a, mode=mode)
         fold_aucs = []
         for _, val_idx in folds_idx:
             vi = val_idx[m[val_idx]]

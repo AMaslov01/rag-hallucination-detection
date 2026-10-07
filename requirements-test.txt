@@ -1,0 +1,9 @@
+jsonschema>=4.23,<5
+numpy
+pandas
+PyYAML
+scikit-learn
+scipy
+tenacity
+tqdm
+pytest

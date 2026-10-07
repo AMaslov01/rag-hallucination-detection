@@ -1,11 +1,13 @@
 # --- Core pipeline (needed for a live run) ---
 kg-gen>=0.1.6            # KGGen extractor (LiteLLM + DSPy under the hood)
+litellm>=1.0.0           # direct, cache-backed relation verifier
 sentence-transformers    # S-BERT embeddings for fuzzy entity/relation matching
 scikit-learn             # ROC-AUC, PR curves
 scipy                    # Wilcoxon signed-rank
 numpy
 pandas
 tenacity                 # retries with backoff
+jsonschema>=4.23,<5      # independent validation of every structured LLM response
 tqdm
 
 # --- Reporting ---
