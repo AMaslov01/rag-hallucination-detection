@@ -1,69 +1,73 @@
-# Детекция галлюцинаций в RAG через графы знаний
+# HalluGraph: Evidence-Grounded RAG Hallucination Detection
 
-> Evidence-grounded верификация утверждений в ответах RAG: графы знаний KGGen, сопоставление с контекстом и проверка атомарных claims. Исследовательский проект и статья на SMILES 2026, Skoltech AI Center.
+Knowledge-graph and atomic-claim verification for detecting unsupported statements in RAG answers.
 
-![Python](https://img.shields.io/badge/Python-3.10–3.12-3776AB?logo=python&logoColor=white)
-![RAG](https://img.shields.io/badge/RAG-hallucination_detection-0f766e)
-![Лицензия](https://img.shields.io/badge/лицензия-MIT-2ea44f)
+![Python](https://img.shields.io/badge/Python-3.10--3.12-3776AB?logo=python&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-offline-0f766e)
+![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
-## Главный результат
+> This is Artemiy Maslov's maintained fork of the [original team repository](https://github.com/Kondachello/rag-hallucination-detection). The research was completed by four co-authors with equal contribution; upstream remains the canonical team history.
 
-На фиксированном отложенном подмножестве RAGTruth QA лучший вариант `support-critical` достиг следующих значений:
+## Result
 
-| Метод | ROC-AUC | F1 | Precision / Recall |
+On a fixed held-out RAGTruth QA split, the best `support-critical` configuration achieved:
+
+| Method | ROC-AUC | F1 | Precision / Recall |
 |---|---:|---:|---:|
 | `strict` | 0.755 [0.676, 0.835] | 0.721 [0.639, 0.793] | 0.639 / 0.827 |
 | `support` | 0.730 [0.648, 0.816] | 0.695 [0.611, 0.773] | 0.640 / 0.760 |
 | `support-critical` | **0.849 [0.784, 0.909]** | **0.798 [0.726, 0.862]** | **0.704 / 0.920** |
 
-Это **+0.095 ROC-AUC** к воспроизведённому HalluGraph-подходу. Параметры и пороги классификации выбирались только на обучающей части. Отложенная оценка содержит 147 валидных ответов из детерминированного манифеста на 750 ответов; три ответа невозможно оценить из-за пустого графа.
+This is a **+0.095 ROC-AUC** improvement over the reproduced HalluGraph-style baseline. Parameters and thresholds were selected on training data only. The held-out evaluation contains 147 valid answers from a deterministic 750-answer manifest; three answers were not scored because graph extraction returned an empty graph.
 
-> Результат получен на одном фиксированном манифесте и не является независимой репликацией. Репозиторий сохраняет исследовательский код и воспроизводимую базовую реализацию; статья доступна на [OpenReview](https://openreview.net/forum?id=5nEiOJwG17).
+The result comes from one fixed manifest and is not an independent replication. See the [OpenReview paper](https://openreview.net/forum?id=5nEiOJwG17) for the full study.
 
-## Идея метода
+## Method
 
-Для каждой тройки RAGTruth `(контекст C, запрос Q, ответ A)` извлекаются графы:
+For each RAGTruth triple `(context C, query Q, answer A)`, the pipeline extracts:
 
 ```text
 G_c = KGGen(C)       G_q = KGGen(Q)       G_a = KGGen(A)
-G_ref = G_c ∪ G_q
+G_ref = G_c union G_q
 ```
 
-Далее измеряется, насколько сущности и направленные отношения из графа ответа подтверждаются эталонным графом `G_ref`. Чем выше итоговый риск `H`, тем вероятнее наличие неподтверждённых утверждений.
+It then measures whether answer entities, directed relations, and atomic claims are supported by `G_ref`. Higher risk `H` means more unsupported content.
 
 ```mermaid
 flowchart LR
-    C[Контекст] --> KG1[KGGen]
-    Q[Запрос] --> KG1
-    A[Ответ RAG] --> KG2[KGGen]
-    KG1 --> REF[Эталонный граф]
-    KG2 --> ANS[Граф ответа]
-    REF --> MATCH[Сопоставление сущностей<br/>и отношений]
+    C[Context] --> KG1[KGGen]
+    Q[Query] --> KG1
+    A[RAG answer] --> KG2[KGGen]
+    KG1 --> REF[Reference graph]
+    KG2 --> ANS[Answer graph]
+    REF --> MATCH[Entity and relation grounding]
     ANS --> MATCH
-    MATCH --> CLAIMS[Проверка атомарных<br/>утверждений]
-    CLAIMS --> SCORE[Риск галлюцинации H]
+    MATCH --> CLAIMS[Atomic-claim verification]
+    CLAIMS --> SCORE[Hallucination risk H]
 ```
 
-| Режим | Логика |
+| Mode | Logic |
 |---|---|
-| `strict` | Сопоставление сущностей и сохранение направленных отношений в стиле HalluGraph. |
-| `support` | Отношение засчитывается только при текстовом подтверждении в контексте или запросе. |
-| `support-critical` | Дополнительно проверяются атомарные утверждения; в итоговый скор входят самые рискованные claims. |
+| `strict` | Entity matching and directed-relation preservation. |
+| `support` | A relation counts only when supported by the context or query. |
+| `support-critical` | Adds atomic-claim checks and emphasizes the highest-risk claims. |
 
-Для выбранной конфигурации `alpha=1.0`, `beta=0.5`, `k=3`, `lambda=0.0` итоговый скор упрощается до:
+For the selected configuration (`alpha=1.0`, `beta=0.5`, `k=3`, `lambda=0.0`):
 
 ```text
-H_critical = 0.5 × (1 − EG) + 0.5 × H_top3
+H_critical = 0.5 * (1 - EG) + 0.5 * H_top3
 ```
 
-## Защита эксперимента
+## Evaluation discipline
 
-- Разделение train/test, пятифолдовая настройка на train, пороги и параметры запуска фиксируются в артефактах.
-- Кэш адресуется содержимым и учитывает вход, модель, версию промпта и настройки извлечения.
-- Для unit-тестов используются детерминированные заглушки, поэтому сеть и GPU не нужны.
-- Случаи с пустыми графами учитываются явно, а не скрываются импутацией без отчёта.
+- fixed train/test separation;
+- five-fold parameter selection on the training split only;
+- bootstrap confidence intervals;
+- content-addressed extraction cache;
+- deterministic offline test doubles;
+- explicit reporting of empty graph extractions.
 
-## Локальный запуск
+## Quick start
 
 ```bash
 python -m venv .venv
@@ -72,7 +76,7 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-Проверка всего пайплайна без API-ключа и сетевых вызовов:
+Run the complete offline pipeline without an API key:
 
 ```bash
 python tests/make_fixture.py tests/fixture_data
@@ -80,33 +84,29 @@ python run.py --stage all --fake-extractor \
   --data-dir tests/fixture_data --output-dir results_smoke
 ```
 
-Для живого запуска укажите модель и переменную окружения с API-ключом в [`config.yaml`](config.yaml). Ключ нельзя хранить в конфигурации, аргументах команд, логах или архивах.
+For a live extraction run, configure the model and API-key environment variable in [`config.yaml`](config.yaml). Never put credentials in configuration files, command arguments, logs, or archives.
 
-## Структура
+## Repository map
 
 ```text
-run.py                 этапы extract → score → tune → evaluate
-src/extract.py         извлечение KGGen, повторные попытки и кэш
-src/matching.py        сопоставление сущностей и направленных отношений
-src/metrics.py         Entity Grounding, Relation Preservation и риск H
-src/tune.py            выбор параметров только на обучающей части
-src/evaluate.py        метрики, bootstrap-интервалы и отчёт
-tests/                 офлайн-регрессионные тесты
-config.yaml            единая конфигурация эксперимента
+run.py                 extract -> score -> tune -> evaluate
+src/extract.py         KGGen extraction, retries, and cache
+src/matching.py        entity and directed-relation matching
+src/metrics.py         grounding metrics and risk score
+src/tune.py            train-only parameter selection
+src/evaluate.py        metrics, bootstrap intervals, and reports
+tests/                 offline regression tests
+config.yaml            experiment configuration
 ```
 
-## Публикация
+## Artemiy's role
 
-A. Maslov, E. Rutkovskii, N. Gavrishok, **A. Kondakov**. *What Does the Graph Contribute? Evidence-Grounded Claim Verification for RAG Hallucination Detection.* SMILES 2026 Projects & Proceedings, Skoltech AI Center. [OpenReview](https://openreview.net/forum?id=5nEiOJwG17)
+Artemiy formed and led the four-person research team, set the experimental roadmap, divided research and engineering workstreams, and coordinated evaluation and paper delivery. His main technical contribution was the evidence-grounding score connecting the query, retrieved context, and generated answer through entity/relation grounding and atomic-claim verification.
 
-Работа выполнена четырьмя соавторами с равным вкладом.
+## Paper and attribution
 
-## Ссылки
+A. Maslov, E. Rutkovskii, N. Gavrishok, A. Kondakov. *What Does the Graph Contribute? Evidence-Grounded Claim Verification for RAG Hallucination Detection.* SMILES 2026 Projects & Proceedings, Skoltech AI Center. [OpenReview](https://openreview.net/forum?id=5nEiOJwG17).
 
-- Noël et al. — [HalluGraph](https://arxiv.org/abs/2512.01659)
-- Mo et al. — [KGGen](https://arxiv.org/abs/2502.09956)
-- Niu et al. — [RAGTruth](https://arxiv.org/abs/2401.00396)
+Related work: [HalluGraph](https://arxiv.org/abs/2512.01659), [KGGen](https://arxiv.org/abs/2502.09956), and [RAGTruth](https://arxiv.org/abs/2401.00396).
 
-## Лицензия
-
-MIT — см. [`LICENSE`](LICENSE).
+MIT licensed. See [`LICENSE`](LICENSE).
